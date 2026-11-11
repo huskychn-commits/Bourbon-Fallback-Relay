@@ -35,6 +35,8 @@ Chatbox 需要外部 OneBot bot 连接后才会产生回复。
 - OneBot 11 HTTP / WebSocket
 - SnowLuma / NapCat 两种 profile
 - 私聊消息
+- 生成中可继续发送，消息按到达顺序排队
+- 私聊拍一拍（`friend_poke` / `send_poke`）
 - 管理员 QQ 映射
 - 共享 Chatbox
 - 可选通用 panel 模板
@@ -65,6 +67,8 @@ node onebot\server.mjs
 ```powershell
 python panel\server.py
 ```
+
+Windows 也可以直接双击 `panel\start-panel.vbs`。
 
 打开：
 
@@ -226,8 +230,8 @@ Authorization: Bearer your-token
 ```text
 只实现私聊
 群聊返回空实现
-图片 / 语音 / 文件暂不支持
-一次只等待一条回复
+拍一拍仅私聊，群聊拍一拍返回 1404
+图片 / 文件暂不支持；语音支持发送和本地回放
 ```
 
 ## 文档
@@ -246,6 +250,7 @@ runtime/
 ├─ admin.json                     管理员 QQ
 ├─ mode.json                      snowluma / napcat
 ├─ logs/agent.log                 运行日志
+├─ media/                         语音文件（按 sha1 命名）
 └─ chat-history/YYYY-MM-DD.jsonl  完整聊天记录
 ```
 

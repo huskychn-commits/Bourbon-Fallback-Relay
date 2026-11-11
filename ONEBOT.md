@@ -121,6 +121,8 @@ runtime/admin.json
 ```text
 POST /send_private_msg
 POST /send_msg
+POST /friend_poke
+POST /send_poke
 POST /send_group_msg（空实现）
 GET  /get_login_info
 GET  /get_friend_list
@@ -160,6 +162,71 @@ message_sent_type
 
 核心消息/发送协议相同。
 
+## 语音
+
+发送语音用标准 `record` 段：
+
+```json
+{
+  "action": "send_private_msg",
+  "params": {
+    "user_id": 123456789,
+    "message": [
+      { "type": "record", "data": { "file": "base64://<wav/base64>" } }
+    ]
+  }
+}
+```
+
+`file` 也接受 `file:///绝对路径`、本地绝对路径、`http(s)://` URL，或 `runtime/media` 下已有文件名。
+服务端会把音频落到：
+
+```text
+runtime/media/<sha1>.wav
+```
+
+并回写可播放地址：
+
+```json
+{ "type": "record", "data": { "file": "ab12cd34ef567890.wav", "url": "http://127.0.0.1:3200/media/ab12cd34ef567890.wav" } }
+```
+
+`can_send_record` 返回 `yes`。收到的语音暂不做识别（不做 ASR）。
+
+## 拍一拍
+
+私聊拍一拍，SnowLuma / NapCat 兼容：
+
+```json
+{
+  "action": "friend_poke",
+  "params": { "user_id": 123456789 }
+}
+```
+
+`send_poke` 是同一动作的别名；返回 `data: null`。
+群聊拍一拍未实现，带 `group_id` 会返回 `retcode: 1404`。
+
+对方拍你时，会向已连接的 bot 推送 notice：
+
+```json
+{
+  "post_type": "notice",
+  "notice_type": "notify",
+  "sub_type": "poke",
+  "self_id": 10000,
+  "time": 1790000000,
+  "user_id": 123456789,
+  "sender_id": 123456789,
+  "target_id": 10000,
+  "action": "拍一拍",
+  "suffix": "",
+  "action_img_url": ""
+}
+```
+
+`user_id` 是私聊对象，`sender_id` 是拍的人，`target_id` 是被拍的人。
+
 ## 本地控制
 
 聊天窗调用：
@@ -172,16 +239,18 @@ POST http://127.0.0.1:3200/local/send
 响应：
 
 ```json
-{"ok":true,"reply":"……在。"}
+{"ok":true,"message_id":1000}
 ```
+
+消息发出即返回；bot 的回复通过 `GET /local/events?since=` 异步读取。
 
 ## 限制
 
 ```text
 只实现私聊
 群聊返回空/成功但不投递
-图片/语音/文件暂不支持
-一次只等待一条回复
+拍一拍仅私聊，群聊拍一拍返回 1404
+图片/文件暂不支持；语音支持发送和本地回放
 ```
 
 ## Auth

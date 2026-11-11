@@ -26,6 +26,20 @@ python panel\server.py
 http://127.0.0.1:3134
 ```
 
+Windows 也可以直接双击：
+
+```text
+panel\start-panel.vbs
+```
+
+脚本会按 `pythonw` → `python` → `py -3` 的顺序查找 Python 3.8+，并复用已在运行的实例。
+找不到时用 `PANEL_PYTHON` 指定解释器路径；加 `/no-open` 可只启动、不打开浏览器。
+
+```powershell
+$env:PANEL_PYTHON = "C:\Path\To\pythonw.exe"
+cscript //nologo panel\start-panel.vbs /no-open
+```
+
 Chatbox：
 
 ```text

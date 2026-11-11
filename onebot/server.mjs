@@ -11,6 +11,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(HERE, '..');
 const CONFIG_FILE = process.env.EMERGENCY_CONFIG || path.join(APP_ROOT, 'config.json');
 const RUNTIME = path.join(APP_ROOT, 'runtime');
+const MEDIA_DIR = process.env.ONEBOT_MEDIA_DIR || path.join(RUNTIME, 'media');
 const MODE_FILE = path.join(RUNTIME, 'mode.json');
 const ADMIN_FILE = path.join(RUNTIME, 'admin.json');
 const HTTP_PORT = Number(process.env.ONEBOT_HTTP_PORT || 3000);
@@ -68,10 +69,106 @@ function textSegments(text) {
   return [{ type: 'text', data: { text: String(text ?? '') } }];
 }
 
+function sniffAudioExt(buffer) {
+  if (buffer.length >= 4 && buffer.subarray(0, 4).toString('ascii') === 'RIFF') return '.wav';
+  if (buffer.length >= 4 && buffer.subarray(0, 4).toString('ascii') === 'OggS') return '.ogg';
+  if (buffer.length >= 4 && buffer.subarray(0, 4).toString('ascii') === 'fLaC') return '.flac';
+  if (buffer.length >= 3 && buffer.subarray(0, 3).toString('ascii') === 'ID3') return '.mp3';
+  if (buffer.length >= 2 && buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0) return '.mp3';
+  return '.wav';
+}
+
+function saveMedia(buffer, ext) {
+  const safeExt = /^\.[a-z0-9]{1,5}$/i.test(String(ext || '')) ? String(ext).toLowerCase() : '.wav';
+  const name = `${crypto.createHash('sha1').update(buffer).digest('hex').slice(0, 16)}${safeExt}`;
+  fs.mkdirSync(MEDIA_DIR, { recursive: true });
+  fs.writeFileSync(path.join(MEDIA_DIR, name), buffer);
+  return name;
+}
+
+function mediaUrl(name) {
+  return `http://127.0.0.1:${LOCAL_PORT}/media/${encodeURIComponent(name)}`;
+}
+
+function storeRecordSegment(part) {
+  const data = part?.data || {};
+  let file = String(data.file || data.path || '').trim();
+  const remoteUrl = String(data.url || '').trim();
+  let buffer = null;
+  if (file.startsWith('base64://')) {
+    try { buffer = Buffer.from(file.slice('base64://'.length), 'base64'); } catch { buffer = null; }
+  } else if (file.startsWith('file://')) {
+    try {
+      const local = decodeURIComponent(file.slice('file://'.length));
+      buffer = fs.readFileSync(local);
+      file = local;
+    } catch { buffer = null; }
+  } else if (file && path.isAbsolute(file)) {
+    try { buffer = fs.readFileSync(file); } catch { buffer = null; }
+  } else if (file && fs.existsSync(path.join(MEDIA_DIR, file))) {
+    return { type: 'record', data: { file, url: mediaUrl(file) } };
+  }
+  if (buffer) {
+    const name = saveMedia(buffer, sniffAudioExt(buffer));
+    return { type: 'record', data: { file: name, url: mediaUrl(name) } };
+  }
+  if (remoteUrl) return { type: 'record', data: { file: '', url: remoteUrl } };
+  return null;
+}
+
+function normalizeOutgoing(message) {
+  if (typeof message === 'string') return textSegments(message);
+  if (!Array.isArray(message)) return textSegments(String(message ?? ''));
+  const segments = [];
+  for (const part of message) {
+    const type = String(part?.type || '');
+    if (type === 'text') {
+      segments.push({ type: 'text', data: { text: String(part?.data?.text ?? '') } });
+    } else if (type === 'record') {
+      const stored = storeRecordSegment(part);
+      if (stored) segments.push(stored);
+    } else {
+      segments.push(part);
+    }
+  }
+  return segments;
+}
+
+function noticePayload(senderId, targetId, action, suffix) {
+  return {
+    post_type: 'notice',
+    notice_type: 'notify',
+    sub_type: 'poke',
+    self_id: SELF_ID,
+    time: Math.floor(Date.now() / 1000),
+    user_id: adminId(),
+    sender_id: Number(senderId),
+    target_id: Number(targetId),
+    action: String(action || ''),
+    suffix: String(suffix || ''),
+    action_img_url: '',
+  };
+}
+
+function queueLocalEvent(event) {
+  const item = { ...event, local_event_id: nextEventId++ };
+  localEvents.push(item);
+  if (localEvents.length > 200) localEvents.shift();
+  return item;
+}
+
+function emitPoke(senderId, targetId, action, suffix) {
+  const event = noticePayload(senderId, targetId, action, suffix);
+  queueLocalEvent(event);
+  broadcast(event);
+  return event;
+}
+
 const clients = new Set();
 let nextMessageId = 1000;
-let pending = null;
 const queued = [];
+const localEvents = [];
+let nextEventId = 1;
 const startedAt = Date.now();
 
 function eventPayload(text) {
@@ -101,37 +198,50 @@ function broadcast(payload) {
 
 function onLocalSend(text) {
   if (!clients.size) throw new Error('没有 OneBot 客户端连接');
+  // QQ 语义：每条消息都是一个独立事件，发出即返回，不等待回复。
   const event = eventPayload(text);
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      if (pending?.reject === reject) pending = null;
-      reject(new Error('等待外部 bot 回复超时'));
-    }, Number(process.env.ONEBOT_REPLY_TIMEOUT_MS || 180000));
-    pending = {
-      resolve: (value) => { clearTimeout(timer); resolve(value); },
-      reject: (error) => { clearTimeout(timer); reject(error); },
-    };
-    broadcast(event);
-  });
+  broadcast(event);
+  return { message_id: event.message_id };
+}
+
+function onLocalPoke() {
+  if (!clients.size) throw new Error('没有 OneBot 客户端连接');
+  const event = noticePayload(adminId(), SELF_ID, '拍一拍', '');
+  queueLocalEvent(event);
+  broadcast(event);
+  return { ok: true };
 }
 
 function action(name, params, echo) {
   const profile = mode();
   if (name === 'send_private_msg' || name === 'send_msg') {
-    const text = segmentsToText(params?.message ?? params?.text ?? '');
+    const segments = normalizeOutgoing(params?.message ?? params?.text ?? '');
+    const text = segments.filter((part) => part.type === 'text').map((part) => String(part.data?.text ?? '')).join('');
     const target = String(params?.user_id ?? params?.user ?? adminId());
     if (target !== String(adminId()) && target !== 'admin') {
       return response(null, echo, 1404);
     }
-    if (pending) {
-      const waiter = pending;
-      pending = null;
-      waiter.resolve(text);
-    } else {
-      queued.push({ text, at: Date.now() });
-      if (queued.length > 100) queued.shift();
-    }
-    return response({ message_id: nextMessageId++ }, echo);
+    const event = {
+      post_type: 'message_sent',
+      message_type: 'private',
+      sub_type: 'friend',
+      self_id: SELF_ID,
+      user_id: adminId(),
+      message_id: nextMessageId++,
+      time: Math.floor(Date.now() / 1000),
+      raw_message: text,
+      message: segments,
+      sender: { user_id: SELF_ID, nickname: 'Bourbon', card: '' },
+    };
+    queueLocalEvent(event);
+    return response({ message_id: event.message_id }, echo);
+  }
+  if (name === 'friend_poke' || name === 'send_poke') {
+    if (params?.group_id) return response(null, echo, 1404);
+    const target = String(params?.user_id ?? params?.target_id ?? adminId());
+    if (target !== String(adminId()) && target !== 'admin') return response(null, echo, 1404);
+    emitPoke(SELF_ID, adminId(), params?.action || '拍一拍', params?.suffix || '');
+    return response(null, echo);
   }
   if (name === 'send_group_msg') {
     return response({ message_id: nextMessageId++ }, echo);
@@ -153,8 +263,11 @@ function action(name, params, echo) {
   if (name === 'get_msg') {
     return response(null, echo, 1404);
   }
-  if (name === 'can_send_image' || name === 'can_send_record') {
+  if (name === 'can_send_image') {
     return response({ yes: false }, echo);
+  }
+  if (name === 'can_send_record') {
+    return response({ yes: true }, echo);
   }
   if (name === 'get_status') return response({ online: true }, echo);
   return response(null, echo, 1404);
@@ -222,7 +335,8 @@ function attachWs(socket) {
           const msg = JSON.parse(data.toString('utf8'));
           const result = action(String(msg.action || ''), msg.params || {}, msg.echo);
           client.sendText(JSON.stringify(result));
-        } catch {
+        } catch (error) {
+          console.error('[onebot] action error', error);
           client.sendText(JSON.stringify(response(null, null, 1400)));
         }
       }
@@ -315,14 +429,36 @@ const localServer = http.createServer(async (req, res) => {
     res.end(data);
   };
   if (req.method === 'GET' && url.pathname === '/local/status') {
-    return json(200, { ok: true, mode: mode(), clients: clients.size, queued: queued.length, pending: Boolean(pending) });
+    return json(200, { ok: true, mode: mode(), clients: clients.size, queued: queued.length, pending: false, lastEventId: nextEventId - 1 });
+  }
+  if (req.method === 'GET' && url.pathname === '/local/events') {
+    const since = Number(url.searchParams.get('since') || 0) || 0;
+    return json(200, { ok: true, events: localEvents.filter((event) => event.local_event_id > since), lastId: nextEventId - 1 });
+  }
+  if (req.method === 'POST' && url.pathname === '/local/poke') {
+    try {
+      onLocalPoke();
+      return json(200, { ok: true });
+    } catch (error) { return json(503, { ok: false, error: String(error?.message ?? error) }); }
   }
   if (req.method === 'POST' && url.pathname === '/local/send') {
     const body = await readBody(req);
     const text = String(body.text || '').trim();
     if (!text) return json(400, { ok: false, error: 'empty' });
-    try { return json(200, { ok: true, reply: await onLocalSend(text) }); }
-    catch (error) { return json(503, { ok: false, error: String(error?.message ?? error) }); }
+    try {
+      const result = onLocalSend(text);
+      return json(200, { ok: true, message_id: result.message_id });
+    } catch (error) { return json(503, { ok: false, error: String(error?.message ?? error) }); }
+  }
+  if (req.method === 'GET' && url.pathname.startsWith('/media/')) {
+    const name = decodeURIComponent(url.pathname.slice('/media/'.length));
+    if (!/^[a-z0-9]{6,64}\.[a-z0-9]{1,5}$/i.test(name)) return json(404, { ok: false, error: 'not found' });
+    const file = path.join(MEDIA_DIR, name);
+    if (!fs.existsSync(file)) return json(404, { ok: false, error: 'not found' });
+    const buf = fs.readFileSync(file);
+    const types = { '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.flac': 'audio/flac' };
+    res.writeHead(200, { 'content-type': types[path.extname(name).toLowerCase()] || 'application/octet-stream', 'content-length': buf.length, 'cache-control': 'no-store' });
+    return res.end(buf);
   }
   return json(404, { ok: false, error: 'not found' });
 });

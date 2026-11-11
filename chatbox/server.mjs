@@ -8,11 +8,12 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
 const HISTORY_DIR = path.join(HERE, '..', 'runtime', 'chat-history');
+const MEDIA_DIR = path.join(HERE, '..', 'runtime', 'media');
 const MODE_FILE = path.join(HERE, '..', 'runtime', 'mode.json');
 const PORT = Number(process.env.CHATBOX_PORT || 3199);
 const ONEBOT_LOCAL = `http://127.0.0.1:${process.env.ONEBOT_LOCAL_PORT || 3200}`;
 
-let busy = false;
+let active = 0;
 
 function readJson(file, fallback = {}) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch { return fallback; }
@@ -37,10 +38,11 @@ function readBody(req) {
 function historyFile() {
   return path.join(HISTORY_DIR, `${new Date().toISOString().slice(0, 10)}.jsonl`);
 }
-function appendHistory(role, text) {
+function appendHistory(role, text, segments = []) {
   const item = {
     role,
     text: String(text ?? ''),
+    ...(Array.isArray(segments) && segments.length ? { segments } : {}),
     time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
     at: Date.now(),
   };
@@ -73,7 +75,7 @@ function clearHistory() {
   } catch {}
 }
 
-async function askOneBot(text) {
+async function sendOneBot(text) {
   const response = await fetch(`${ONEBOT_LOCAL}/local/send`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -81,7 +83,58 @@ async function askOneBot(text) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) throw new Error(data.error || `OneBot HTTP ${response.status}`);
-  return String(data.reply || '');
+  return { message_id: Number(data.message_id) || 0 };
+}
+
+async function pokeOneBot() {
+  const response = await fetch(`${ONEBOT_LOCAL}/local/poke`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ok) throw new Error(data.error || `OneBot HTTP ${response.status}`);
+  return true;
+}
+
+async function oneBotEvents(since = 0) {
+  const response = await fetch(`${ONEBOT_LOCAL}/local/events?since=${encodeURIComponent(since)}`);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ok) throw new Error(data.error || `OneBot HTTP ${response.status}`);
+  return data;
+}
+
+function segmentsText(segments) {
+  if (!Array.isArray(segments)) return '';
+  return segments.filter((part) => part?.type === 'text').map((part) => String(part.data?.text ?? '')).join('');
+}
+
+let eventCursor = 0;
+async function pollOneBotEvents() {
+  try {
+    const data = await oneBotEvents(eventCursor);
+    for (const event of data.events || []) {
+      eventCursor = Math.max(eventCursor, Number(event.local_event_id) || 0);
+      if (event.post_type === 'message_sent') {
+        const segments = Array.isArray(event.message) ? event.message : [];
+        const text = segmentsText(segments);
+        if (text === '[SILENT]') continue;
+        appendHistory('bot', text, segments);
+      } else if (event.post_type === 'notice' && event.sub_type === 'poke' && Number(event.sender_id) === 10000) {
+        appendHistory('sys', '波旁拍了拍你');
+      }
+    }
+    if (Number(data.lastId) > eventCursor) eventCursor = Number(data.lastId);
+  } catch {}
+}
+
+async function startEventPoller() {
+  try {
+    const data = await oneBotEvents(999999999);
+    eventCursor = Number(data.lastId) || 0;
+  } catch {}
+  const timer = setInterval(pollOneBotEvents, 800);
+  timer.unref?.();
 }
 
 const server = http.createServer(async (req, res) => {
@@ -101,8 +154,19 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/favicon.ico') return staticFile('favicon.ico', 'image/x-icon');
   if (req.method === 'GET' && url.pathname === '/logo.png') return staticFile('logo.png', 'image/png');
 
+  if (req.method === 'GET' && url.pathname.startsWith('/media/')) {
+    const name = decodeURIComponent(url.pathname.slice('/media/'.length));
+    if (!/^[a-z0-9]{6,64}\.[a-z0-9]{1,5}$/i.test(name)) return json(res, 404, { ok: false, error: 'not found' });
+    const file = path.join(MEDIA_DIR, name);
+    if (!fs.existsSync(file)) return json(res, 404, { ok: false, error: 'not found' });
+    const buf = fs.readFileSync(file);
+    const types = { '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.flac': 'audio/flac' };
+    res.writeHead(200, { 'content-type': types[path.extname(name).toLowerCase()] || 'application/octet-stream', 'content-length': buf.length, 'cache-control': 'no-store' });
+    res.end(buf);
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/api/status') {
-    return json(res, 200, { ok: true, busy, mode: currentMode(), model: 'OneBot 11', transport: 'onebot' });
+    return json(res, 200, { ok: true, busy: active > 0, queued: active, mode: currentMode(), model: 'OneBot 11', transport: 'onebot' });
   }
   if (req.method === 'GET' && url.pathname === '/v1/health') {
     return json(res, 200, { ok: true, service: 'bourbon-fallback-relay', version: 1, transport: 'onebot' });
@@ -110,31 +174,52 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/history') {
     return json(res, 200, { ok: true, items: readHistory(300) });
   }
+  if (req.method === 'GET' && url.pathname === '/api/events') {
+    try {
+      const data = await oneBotEvents(url.searchParams.get('since') || 0);
+      return json(res, 200, { ok: true, events: data.events || [], lastId: data.lastId || 0 });
+    } catch (error) {
+      return json(res, 200, { ok: false, error: String(error?.message ?? error), events: [], lastId: 0 });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/poke') {
+    appendHistory('sys', '你拍了拍波旁');
+    active += 1;
+    try {
+      await pokeOneBot();
+      return json(res, 200, { ok: true, mode: currentMode() });
+    } catch (error) {
+      return json(res, 500, { ok: false, error: String(error?.message ?? error) });
+    } finally {
+      active -= 1;
+    }
+  }
   if (req.method === 'POST' && url.pathname === '/api/reset') {
     clearHistory();
     return json(res, 200, { ok: true });
   }
   if (req.method === 'POST' && (url.pathname === '/api/send' || url.pathname === '/v1/messages')) {
-    if (busy) return json(res, 409, { ok: false, error: '上一条还在处理' });
     const body = await readBody(req);
     const text = String(body.text ?? '').trim();
     if (!text) return json(res, 400, { ok: false, error: 'empty' });
-    busy = true;
+    appendHistory('me', text);
+    active += 1;
     try {
-      appendHistory('me', text);
-      const reply = await askOneBot(text);
-      if (reply && reply !== '[SILENT]') appendHistory('bot', reply);
-      return json(res, 200, { ok: true, reply: reply === '[SILENT]' ? '' : reply, silent: reply === '[SILENT]', mode: currentMode() });
+      const result = await sendOneBot(text);
+      return json(res, 200, { ok: true, message_id: result.message_id, mode: currentMode() });
     } catch (error) {
       return json(res, 500, { ok: false, error: String(error?.message ?? error) });
     } finally {
-      busy = false;
+      active -= 1;
     }
   }
   return json(res, 404, { ok: false, error: 'not found' });
 });
 
-server.listen(PORT, '127.0.0.1', () => console.log(`[chatbox] http ${PORT}`));
+server.listen(PORT, '127.0.0.1', () => {
+  console.log(`[chatbox] http ${PORT}`);
+  void startEventPoller();
+});
 
 
 

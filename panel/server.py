@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -171,6 +172,12 @@ def state():
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "EmergencyPanel/1.0"
+
+    def log_message(self, fmt, *args):
+        # pythonw.exe has no stderr; writing a log line there raises and kills
+        # the request before headers are sent. Stay silent instead.
+        if sys.stderr:
+            super().log_message(fmt, *args)
 
     def _json(self, value, status=200):
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")

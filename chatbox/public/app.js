@@ -5,6 +5,7 @@ const composer = $('composer');
 const send = $('send');
 const typing = $('typing');
 const status = $('status');
+const avatar = $('avatar');
 
 let history = [];
 
@@ -12,9 +13,9 @@ function now() {
   return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
-function add(role, text, time = now()) {
-  if (!text) return;
-  history.push({ role, text, time });
+function add(role, text, time = now(), segments = []) {
+  if (!text && !(Array.isArray(segments) && segments.length)) return;
+  history.push({ role, text, time, ...(segments.length ? { segments } : {}) });
   render();
 }
 
@@ -28,11 +29,31 @@ function render() {
     return;
   }
   for (const item of history) {
+    if (item.role === 'sys') {
+      const sys = document.createElement('div');
+      sys.className = 'sys';
+      sys.textContent = item.text;
+      messages.appendChild(sys);
+      continue;
+    }
     const row = document.createElement('div');
     row.className = `row ${item.role === 'me' ? 'me' : 'bot'}`;
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     bubble.textContent = item.text;
+    if (Array.isArray(item.segments)) {
+      for (const seg of item.segments) {
+        if (seg?.type !== 'record') continue;
+        const file = String(seg.data?.file || '');
+        const src = file ? `/media/${encodeURIComponent(file)}` : String(seg.data?.url || '');
+        if (!src) continue;
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.preload = 'metadata';
+        audio.src = src;
+        bubble.appendChild(audio);
+      }
+    }
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = `${item.role === 'me' ? 'Master' : '波旁'} · ${item.time}`;
@@ -45,6 +66,20 @@ function render() {
   messages.scrollTop = messages.scrollHeight;
 }
 
+let inflight = 0;
+
+function beginTurn() {
+  inflight += 1;
+  typing.hidden = false;
+  typing.textContent = inflight > 1 ? `波旁正在输入…（还有 ${inflight - 1} 条排队）` : '波旁正在输入…';
+}
+
+function endTurn() {
+  inflight = Math.max(0, inflight - 1);
+  if (inflight === 0) typing.hidden = true;
+  input.focus();
+}
+
 async function sendText() {
   const text = input.value.trim();
   if (!text) return;
@@ -52,9 +87,7 @@ async function sendText() {
   input.style.height = 'auto';
   input.classList.remove('scroll');
   add('me', text);
-  send.disabled = true;
-  input.disabled = true;
-  typing.hidden = false;
+  beginTurn();
   try {
     const response = await fetch('/api/send', {
       method: 'POST',
@@ -63,15 +96,6 @@ async function sendText() {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    if (data.silent) {
-      const sys = document.createElement('div');
-      sys.className = 'sys';
-      sys.textContent = '[SILENT] 她这次没有开口';
-      messages.appendChild(sys);
-      messages.scrollTop = messages.scrollHeight;
-    } else {
-      add('bot', data.reply || '（空回复）');
-    }
   } catch (error) {
     const sys = document.createElement('div');
     sys.className = 'sys';
@@ -79,12 +103,26 @@ async function sendText() {
     messages.appendChild(sys);
     messages.scrollTop = messages.scrollHeight;
   } finally {
-    typing.hidden = true;
-    send.disabled = false;
-    input.disabled = false;
-    input.focus();
+    endTurn();
   }
 }
+
+avatar.addEventListener('dblclick', async () => {
+  if (avatar.dataset.busy === '1') return;
+  avatar.dataset.busy = '1';
+  add('sys', '你拍了拍波旁');
+  beginTurn();
+  try {
+    const response = await fetch('/api/poke', { method: 'POST' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  } catch (error) {
+    add('sys', `拍一拍失败：${error.message}`);
+  } finally {
+    delete avatar.dataset.busy;
+    endTurn();
+  }
+});
 
 composer.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -111,6 +149,31 @@ $('reset').addEventListener('click', async () => {
   history = [];
   render();
 });
+
+let lastEventId = null;
+async function pollEvents() {
+  try {
+    const response = await fetch(`/api/events?since=${lastEventId ?? 999999999}`, { cache: 'no-store' });
+    const data = await response.json();
+    if (!data.ok) return;
+    if (lastEventId === null) {
+      lastEventId = Number(data.lastId) || 0;
+      return;
+    }
+    for (const event of data.events || []) {
+      lastEventId = Math.max(lastEventId, Number(event.local_event_id) || 0);
+      if (event.post_type === 'message_sent') {
+        const segments = Array.isArray(event.message) ? event.message : [];
+        const text = segments.filter((part) => part?.type === 'text').map((part) => String(part.data?.text ?? '')).join('');
+        add('bot', text, undefined, segments);
+      } else if (event.sub_type === 'poke' && Number(event.sender_id) === 10000) {
+        add('sys', event.action ? `波旁拍了拍你（${event.action}）` : '波旁拍了拍你');
+      }
+    }
+  } catch {}
+}
+pollEvents();
+setInterval(pollEvents, 1000);
 
 (async () => {
   try {

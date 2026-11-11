@@ -5,9 +5,10 @@
 它只负责：
 
 ```text
-输入消息
+输入消息 / 双击头像拍一拍
 POST http://127.0.0.1:3200/local/send
-显示外部 bot 的回复
+POST http://127.0.0.1:3200/local/poke
+显示外部 bot 的文本 / 语音 / 拍一拍
 ```
 
 不包含：
@@ -69,6 +70,8 @@ runtime/chat-history/YYYY-MM-DD.jsonl
 已 gitignore。
 
 ## 说明
+
+生成过程中可以继续输入、发送；服务端按到达顺序串行处理，输入框不会被锁。
 
 UI 沿用 Bourbon 的聊天窗，保留「波旁」昵称与 B 头像作为彩蛋；使用者可以直接改 `public/`。
 

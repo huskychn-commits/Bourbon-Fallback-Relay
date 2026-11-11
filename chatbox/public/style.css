@@ -129,6 +129,8 @@ textarea:focus { border-color: #93b4ff; box-shadow: 0 0 0 3px rgba(47,111,237,.1
   box-shadow: 0 4px 12px rgba(47,111,237,.25);
 }
 #send:disabled { background: #b9c7df; box-shadow: none; cursor: default; }
+.avatar { cursor: pointer; user-select: none; }
+.bubble audio { display: block; width: 220px; max-width: 100%; margin-top: 6px; }
 .foot {
   flex: 0 0 auto;
   text-align: center;
