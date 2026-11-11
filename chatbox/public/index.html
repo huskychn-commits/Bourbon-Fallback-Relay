@@ -1,0 +1,43 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bourbon Fallback Relay · 本地私聊</title>
+  <link rel="icon" type="image/png" sizes="256x256" href="/logo.png">
+  <link rel="shortcut icon" href="/logo.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="head">
+      <div class="avatar">B</div>
+      <div class="who">
+        <div class="name" id="chatname">波旁 <span class="local">本地</span></div>
+        <div class="sub" id="status">管理员（admin）</div>
+      </div>
+      <button class="reset" id="reset" title="新会话">↺</button>
+    </header>
+    <main class="messages" id="messages" aria-live="polite"></main>
+    <div class="typing" id="typing" hidden>波旁正在输入…</div>
+    <form class="composer" id="composer">
+      <textarea id="input" rows="1" placeholder="和波旁说点什么…" autocomplete="off"></textarea>
+      <button type="submit" id="send" aria-label="发送">↑</button>
+    </form>
+    <footer class="foot">本地 OneBot 通道 · 兼容 SnowLuma / NapCat</footer>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+

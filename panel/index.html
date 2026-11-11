@@ -1,0 +1,154 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bourbon Fallback Relay</title>
+  <link rel="icon" type="image/png" sizes="256x256" href="/logo.png">
+  <link rel="shortcut icon" href="/logo.png">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #eef1f6; color: #111827; font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+    main { width: min(760px, 100%); min-height: 100dvh; margin: 0 auto; padding: 28px 24px; }
+    .hero { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+    .hero img { width: 46px; height: 46px; border-radius: 12px; object-fit: cover; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .sub { color: #64748b; font-size: 12px; }
+    .hint { color: #94a3b8; font-size: 11px; line-height: 1.5; padding-top: 2px; }
+    .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px 18px; margin-bottom: 12px; }
+    .row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px dashed #edf1f7; font-size: 13px; }
+    .row:last-child { border-bottom: 0; }
+    .k { color: #64748b; }
+    .v { font-weight: 600; text-align: right; }
+    .ok { color: #15803d; }
+    .bad { color: #b91c1c; }
+    button { border: 1px solid #dbe3ef; background: #fff; color: #334155; border-radius: 8px; padding: 7px 11px; font: 600 12px inherit; cursor: pointer; }
+    button:hover { border-color: #93b4ff; color: #1d4ed8; }
+    button.primary { background: #2f6fed; border-color: #2f6fed; color: #fff; }
+    button.active { background: #eff6ff; border-color: #2f6fed; color: #1d4ed8; }
+    input { width: 160px; border: 1px solid #dbe3ef; border-radius: 8px; padding: 6px 8px; font: 13px inherit; text-align: right; }
+    .line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .msg { color: #64748b; font-size: 12px; }
+    code { background: #f1f5f9; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="hero">
+    <img src="/logo.png" alt="Bourbon">
+    <div>
+      <h1>Bourbon Fallback Relay</h1>
+      <div class="sub">以本地 OneBot 11 兼容层模拟 QQ 连接，用于联调、兼容性测试与应急回退。</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="line">
+      <button class="primary" id="start">启动 Chatbox</button>
+      <span class="msg" id="msg"></span>
+    </div>
+    <div class="line" style="margin-top:10px">
+      <span style="font-size:12px;color:#64748b">对话通道</span>
+      <button class="mode" data-mode="snowluma">SnowLuma</button>
+      <button class="mode" data-mode="napcat">NapCat</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row"><span class="k">OneBot 状态</span><span class="v" id="status">检查中</span></div>
+    <div class="row"><span class="k">Profile</span><span class="v" id="profile">—</span></div>
+    <div class="row"><span class="k">HTTP</span><span class="v"><code id="http">3000</code></span></div>
+    <div class="row"><span class="k">WebSocket</span><span class="v"><code id="ws">3001</code></span></div>
+    <div class="row"><span class="k">已连接 bot</span><span class="v" id="clients">0</span></div>
+    <div class="row"><span class="k">Chatbox</span><span class="v" id="chatbox">未运行</span></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><span class="k">管理员 QQ</span><span class="v line" style="justify-content:flex-end">
+      <input id="adminqq" inputmode="numeric" placeholder="可留空">
+      <button id="save">保存</button>
+    </span></div>
+    <div class="hint">用于映射管理员私聊会话；填写后本地对话与该 QQ 账号使用同一会话键，以保持对话连续性。</div>
+  </div>
+
+  <div class="card">
+    <div class="row"><span class="k">HTTP API</span><span class="v"><code>http://127.0.0.1:3000</code></span></div>
+    <div class="row"><span class="k">WebSocket</span><span class="v"><code>ws://127.0.0.1:3001/</code></span></div>
+    <div class="row"><span class="k">本地控制</span><span class="v"><code>http://127.0.0.1:3200/local/send</code></span></div>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function render(s) {
+  const ob = s.onebot || {};
+  $('status').textContent = ob.running ? '运行中' : '未运行';
+  $('status').className = `v ${ob.running ? 'ok' : 'bad'}`;
+  $('profile').textContent = ob.profile || '—';
+  $('http').textContent = ob.httpPort || 3000;
+  $('ws').textContent = ob.wsPort || 3001;
+  $('clients').textContent = ob.clients ?? 0;
+
+  const cb = s.chatbox || {};
+  $('chatbox').textContent = cb.running ? `运行中 · ${cb.url}` : '未运行';
+  $('chatbox').className = `v ${cb.running ? 'ok' : 'bad'}`;
+
+  $('adminqq').value = s.adminQQ || '';
+  document.querySelectorAll('.mode').forEach((b) => b.classList.toggle('active', b.dataset.mode === s.mode));
+}
+
+async function refresh() {
+  try { render(await (await fetch('/api/state')).json()); } catch {}
+}
+
+$('start').onclick = async () => {
+  $('start').disabled = true;
+  $('msg').textContent = '启动中…';
+  const tab = window.open('about:blank', '_blank');
+  if (tab) tab.document.title = 'Chatbox · 启动中';
+  try {
+    const r = await fetch('/api/start', { method: 'POST' });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || '启动失败');
+    $('msg').textContent = j.chatbox?.reused ? '已有 Chatbox，复用' : 'Chatbox 已启动';
+    if (tab) {
+      tab.location.href = j.chatUrl;
+      tab.focus();
+    } else {
+      $('msg').innerHTML = `已启动：<a href="${j.chatUrl}" target="_blank" rel="noopener">打开 Chatbox</a>`;
+    }
+    await refresh();
+  } catch (e) {
+    if (tab) tab.close();
+    $('msg').textContent = `失败：${e.message}`;
+  } finally {
+    $('start').disabled = false;
+  }
+};
+
+document.querySelectorAll('.mode').forEach((b) => {
+  b.onclick = async () => {
+    const r = await fetch('/api/mode', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: b.dataset.mode }) });
+    const j = await r.json();
+    $('msg').textContent = j.ok ? `profile：${j.mode}` : `失败：${j.error}`;
+    await refresh();
+  };
+});
+
+$('save').onclick = async () => {
+  const r = await fetch('/api/admin', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ adminQQ: $('adminqq').value.trim() }) });
+  const j = await r.json();
+  $('msg').textContent = j.ok ? '管理员 QQ 已保存' : `失败：${j.error}`;
+  await refresh();
+};
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
+
+
+
+
+

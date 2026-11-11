@@ -1,0 +1,13 @@
+# Local-only adapter (not part of this repo)
+bourbon/
+
+# Local runtime state
+runtime/
+chatbox/runtime/
+config.json
+*.log
+__pycache__/
+*.pyc
+node_modules/
+.env
+.env.*
