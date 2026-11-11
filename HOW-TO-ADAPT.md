@@ -1,4 +1,4 @@
-# 如何接这个应急项目
+# 如何接入 Bourbon Fallback Relay
 
 这个项目不是 SnowLuma 的替代品，而是一个 **OneBot 11 兼容层**。
 
@@ -36,7 +36,7 @@ node onebot\server.mjs
 
 ## 2. 设置管理员 QQ
 
-启动后，本地聊天窗 / 紧急面板会提供管理员 QQ 输入。
+启动后，本地聊天窗 / 控制面板会提供管理员 QQ 输入。
 
 写入：
 
