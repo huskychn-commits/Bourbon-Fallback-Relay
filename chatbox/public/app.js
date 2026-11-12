@@ -13,8 +13,13 @@ function now() {
   return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
+function hasVisibleContent(text, segments) {
+  if (String(text || '').trim()) return true;
+  return Array.isArray(segments) && segments.some((part) => part?.type !== 'text' || String(part?.data?.text ?? '').trim());
+}
+
 function add(role, text, time = now(), segments = []) {
-  if (!text && !(Array.isArray(segments) && segments.length)) return;
+  if (!hasVisibleContent(text, segments)) return;
   history.push({ role, text, time, ...(segments.length ? { segments } : {}) });
   render();
 }
@@ -36,6 +41,7 @@ function render() {
       messages.appendChild(sys);
       continue;
     }
+    if (item.role === 'bot' && !hasVisibleContent(item.text, item.segments)) continue;
     const row = document.createElement('div');
     row.className = `row ${item.role === 'me' ? 'me' : 'bot'}`;
     const bubble = document.createElement('div');
@@ -165,6 +171,7 @@ async function pollEvents() {
       if (event.post_type === 'message_sent') {
         const segments = Array.isArray(event.message) ? event.message : [];
         const text = segments.filter((part) => part?.type === 'text').map((part) => String(part.data?.text ?? '')).join('');
+        if (text === '[SILENT]' || !hasVisibleContent(text, segments)) continue;
         add('bot', text, undefined, segments);
       } else if (event.sub_type === 'poke' && Number(event.sender_id) === 10000) {
         add('sys', event.action ? `波旁拍了拍你（${event.action}）` : '波旁拍了拍你');

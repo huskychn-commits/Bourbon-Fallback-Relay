@@ -109,6 +109,11 @@ function segmentsText(segments) {
   return segments.filter((part) => part?.type === 'text').map((part) => String(part.data?.text ?? '')).join('');
 }
 
+function hasVisibleContent(text, segments) {
+  if (String(text || '').trim()) return true;
+  return Array.isArray(segments) && segments.some((part) => part?.type !== 'text' || String(part?.data?.text ?? '').trim());
+}
+
 let eventCursor = 0;
 async function pollOneBotEvents() {
   try {
@@ -118,7 +123,7 @@ async function pollOneBotEvents() {
       if (event.post_type === 'message_sent') {
         const segments = Array.isArray(event.message) ? event.message : [];
         const text = segmentsText(segments);
-        if (text === '[SILENT]') continue;
+        if (text === '[SILENT]' || !hasVisibleContent(text, segments)) continue;
         appendHistory('bot', text, segments);
       } else if (event.post_type === 'notice' && event.sub_type === 'poke' && Number(event.sender_id) === 10000) {
         appendHistory('sys', '波旁拍了拍你');
@@ -141,11 +146,11 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
   const staticFile = (name, type) => {
     const body = fs.readFileSync(path.join(PUBLIC, name));
-    res.writeHead(200, { 'content-type': type, 'content-length': body.length });
+    res.writeHead(200, { 'content-type': type, 'content-length': body.length, 'cache-control': 'no-store' });
     res.end(body);
   };
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(fs.readFileSync(path.join(PUBLIC, 'index.html')));
     return;
   }
