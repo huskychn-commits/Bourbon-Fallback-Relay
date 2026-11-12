@@ -18,7 +18,7 @@ BFR 不实现聊天 AI、人格、记忆或桥接调度。它的职责仅限于�
 | 拍一拍 | 双向 | 支持 | `friend_poke` / `send_poke`；群聊返回 `1404` |
 | 语音 | 角色 → 用户 | 支持 | 标准 `record` 段，落盘后可回放 |
 | 语音 | 用户 → 角色 | 不支持 | 不包含语音识别（ASR） |
-| 图片 | 双向 | 不支持 | OneBot 与 Chatbox 均未实现 |
+| 图片 | 双向 | 支持 | Chatbox 选择 / 粘贴 / 拖拽；仅转发本地图片，模型不生成图片 |
 | 文件 | 双向 | 不支持 | — |
 | 群聊 | — | 不支持 | 仅实现私聊 |
 
@@ -53,7 +53,7 @@ Chatbox
   → BFR 校验目标是否为管理员 QQ
   → 写入本地事件队列
   → Chatbox 轮询 /local/events
-  → 渲染文本、语音或拍一拍
+  → 渲染文本、语音、图片或拍一拍
 ```
 
 BFR 采用单向事件模型：
@@ -246,8 +246,10 @@ Chatbox 与本地界面使用以下接口，不建议外部 bot 直接调用。
 
 ```text
 POST http://127.0.0.1:3200/local/send
-{"text":"在吗"}
+{"text":"在吗","images":["ab12cd34ef567890.png"]}
 ```
+
+`images` 为 `runtime/media` 下的文件名，最多 4 张；也可以只发图片、不带文本。
 
 响应：
 
@@ -277,12 +279,31 @@ GET http://127.0.0.1:3200/local/events?since=0
 
 返回 `message_sent`、`notice` 等异步事件及 `lastId`。
 
-### 7.4 媒体
+### 7.4 上传图片
+
+```text
+POST http://127.0.0.1:3199/api/upload
+Content-Type: image/png
+
+<原始图片字节>
+```
+
+响应：
+
+```json
+{"ok":true,"file":"ab12cd34ef567890.png","url":"/media/ab12cd34ef567890.png"}
+```
+
+支持 PNG / JPEG / GIF / WebP，单张上限 10MB。
+
+### 7.5 媒体
 
 ```text
 GET http://127.0.0.1:3200/media/<file>
 GET http://127.0.0.1:3199/media/<file>
 ```
+
+媒体目录同时存放语音与图片，文件名按内容 sha1 生成。
 
 ## 8. 配置
 
@@ -339,7 +360,7 @@ Authorization: Bearer your-token
 runtime/
 ├─ admin.json                     管理员 QQ
 ├─ mode.json                      snowluma / napcat
-├─ media/                         语音文件（按 sha1 命名）
+├─ media/                         语音与图片文件（按 sha1 命名）
 └─ chat-history/YYYY-MM-DD.jsonl  聊天记录
 ```
 
@@ -361,8 +382,9 @@ runtime/
 ## 11. 限制与非目标
 
 - 仅实现私聊；群聊动作返回空实现或 `1404`。
-- 不支持图片、文件与视频。
+- 不支持文件与视频。
 - 不支持用户语音转文字（无 ASR）。
+- 不生成图片；图片能力仅用于转发本地图片。
 - 不实现聊天 AI、人格、记忆、主动对话或 bridge 调度。
 - 不保证与 SnowLuma / NapCat 的全部扩展接口兼容。
 

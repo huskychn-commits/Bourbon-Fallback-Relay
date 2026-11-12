@@ -6,8 +6,12 @@ const send = $('send');
 const typing = $('typing');
 const status = $('status');
 const avatar = $('avatar');
+const imageBtn = $('imagebtn');
+const imageInput = $('imageinput');
+const attachments = $('attachments');
 
 let history = [];
+let pendingImages = [];
 
 function now() {
   return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
@@ -49,15 +53,22 @@ function render() {
     bubble.textContent = item.text;
     if (Array.isArray(item.segments)) {
       for (const seg of item.segments) {
-        if (seg?.type !== 'record') continue;
-        const file = String(seg.data?.file || '');
-        const src = file ? `/media/${encodeURIComponent(file)}` : String(seg.data?.url || '');
+        const file = String(seg?.data?.file || '');
+        const src = file ? `/media/${encodeURIComponent(file)}` : String(seg?.data?.url || '');
         if (!src) continue;
-        const audio = document.createElement('audio');
-        audio.controls = true;
-        audio.preload = 'metadata';
-        audio.src = src;
-        bubble.appendChild(audio);
+        if (seg.type === 'record') {
+          const audio = document.createElement('audio');
+          audio.controls = true;
+          audio.preload = 'metadata';
+          audio.src = src;
+          bubble.appendChild(audio);
+        } else if (seg.type === 'image') {
+          const img = document.createElement('img');
+          img.src = src;
+          img.alt = '图片';
+          img.loading = 'lazy';
+          bubble.appendChild(img);
+        }
       }
     }
     const meta = document.createElement('div');
@@ -86,19 +97,57 @@ function endTurn() {
   input.focus();
 }
 
+function renderAttachments() {
+  attachments.innerHTML = '';
+  attachments.style.display = pendingImages.length ? 'flex' : 'none';
+  pendingImages.forEach((item, index) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'attachment';
+    const img = document.createElement('img');
+    img.src = item.url || `/media/${encodeURIComponent(item.file)}`;
+    img.alt = '待发送图片';
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.onclick = () => { pendingImages.splice(index, 1); renderAttachments(); };
+    wrap.appendChild(img);
+    wrap.appendChild(remove);
+    attachments.appendChild(wrap);
+  });
+}
+
+async function uploadFiles(files) {
+  for (const file of files) {
+    if (!file || !file.type.startsWith('image/')) continue;
+    try {
+      const response = await fetch('/api/upload', { method: 'POST', body: file });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      pendingImages.push({ file: data.file, url: data.url });
+    } catch (error) {
+      add('sys', `图片上传失败：${error.message}`);
+    }
+  }
+  renderAttachments();
+}
+
 async function sendText() {
   const text = input.value.trim();
-  if (!text) return;
+  const images = pendingImages.map((item) => item.file);
+  if (!text && !images.length) return;
+  const segments = images.map((file) => ({ type: 'image', data: { file, url: `/media/${encodeURIComponent(file)}` } }));
   input.value = '';
   input.style.height = 'auto';
   input.classList.remove('scroll');
-  add('me', text);
+  pendingImages = [];
+  renderAttachments();
+  add('me', text, undefined, segments);
   beginTurn();
   try {
     const response = await fetch('/api/send', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, images }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
@@ -147,6 +196,29 @@ input.addEventListener('input', () => {
   const over = input.scrollHeight > 140;
   input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
   input.classList.toggle('scroll', over);
+});
+
+imageBtn.addEventListener('click', () => imageInput.click());
+imageInput.addEventListener('change', async () => {
+  await uploadFiles([...imageInput.files]);
+  imageInput.value = '';
+});
+input.addEventListener('paste', (event) => {
+  const files = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith('image/'));
+  if (!files.length) return;
+  event.preventDefault();
+  void uploadFiles(files);
+});
+composer.addEventListener('dragover', (event) => {
+  if ([...(event.dataTransfer?.items || [])].some((item) => item.kind === 'file' && item.type.startsWith('image/'))) {
+    event.preventDefault();
+  }
+});
+composer.addEventListener('drop', (event) => {
+  const files = [...(event.dataTransfer?.files || [])].filter((file) => file.type.startsWith('image/'));
+  if (!files.length) return;
+  event.preventDefault();
+  void uploadFiles(files);
 });
 
 $('reset').addEventListener('click', async () => {

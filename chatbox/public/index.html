@@ -20,7 +20,10 @@
     </header>
     <main class="messages" id="messages" aria-live="polite"></main>
     <div class="typing" id="typing" hidden>波旁正在输入…</div>
+    <div class="attachments" id="attachments" hidden></div>
     <form class="composer" id="composer">
+      <input type="file" id="imageinput" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+      <button type="button" class="image-btn" id="imagebtn" title="发送图片" aria-label="发送图片">🖼️</button>
       <textarea id="input" rows="1" placeholder="和波旁说点什么…" autocomplete="off"></textarea>
       <button type="submit" id="send" aria-label="发送">↑</button>
     </form>

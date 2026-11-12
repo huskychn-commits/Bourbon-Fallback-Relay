@@ -1,5 +1,6 @@
 ﻿// Bourbon Fallback Relay · 通用 Chatbox
 // 只把本地消息转成 OneBot 事件；回复由外部 OneBot bot 产生。
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -33,6 +34,37 @@ function readBody(req) {
     req.on('data', (chunk) => { raw += chunk; if (raw.length > 2_000_000) req.destroy(); });
     req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch { resolve({}); } });
   });
+}
+
+function readRaw(req, limit = 10 * 1024 * 1024) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) { req.destroy(); resolve(null); return; }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', () => resolve(null));
+  });
+}
+
+function sniffImageExt(buffer) {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return '.png';
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return '.jpg';
+  if (buffer.length >= 4 && buffer.subarray(0, 4).toString('ascii') === 'GIF8') return '.gif';
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return '.webp';
+  return '';
+}
+
+function storeImage(buffer) {
+  const ext = sniffImageExt(buffer);
+  if (!ext) return null;
+  const name = `${crypto.createHash('sha1').update(buffer).digest('hex').slice(0, 16)}${ext}`;
+  fs.mkdirSync(MEDIA_DIR, { recursive: true });
+  fs.writeFileSync(path.join(MEDIA_DIR, name), buffer);
+  return name;
 }
 
 function historyFile() {
@@ -75,11 +107,11 @@ function clearHistory() {
   } catch {}
 }
 
-async function sendOneBot(text) {
+async function sendOneBot(text, images = []) {
   const response = await fetch(`${ONEBOT_LOCAL}/local/send`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, images }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) throw new Error(data.error || `OneBot HTTP ${response.status}`);
@@ -165,7 +197,10 @@ const server = http.createServer(async (req, res) => {
     const file = path.join(MEDIA_DIR, name);
     if (!fs.existsSync(file)) return json(res, 404, { ok: false, error: 'not found' });
     const buf = fs.readFileSync(file);
-    const types = { '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.flac': 'audio/flac' };
+    const types = {
+      '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.flac': 'audio/flac',
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+    };
     res.writeHead(200, { 'content-type': types[path.extname(name).toLowerCase()] || 'application/octet-stream', 'content-length': buf.length, 'cache-control': 'no-store' });
     res.end(buf);
     return;
@@ -203,14 +238,26 @@ const server = http.createServer(async (req, res) => {
     clearHistory();
     return json(res, 200, { ok: true });
   }
+  if (req.method === 'POST' && url.pathname === '/api/upload') {
+    const buffer = await readRaw(req);
+    if (!buffer) return json(res, 413, { ok: false, error: '图片过大（上限 10MB）' });
+    const file = storeImage(buffer);
+    if (!file) return json(res, 415, { ok: false, error: '仅支持 PNG / JPEG / GIF / WebP' });
+    return json(res, 200, { ok: true, file, url: `/media/${encodeURIComponent(file)}` });
+  }
   if (req.method === 'POST' && (url.pathname === '/api/send' || url.pathname === '/v1/messages')) {
     const body = await readBody(req);
     const text = String(body.text ?? '').trim();
-    if (!text) return json(res, 400, { ok: false, error: 'empty' });
-    appendHistory('me', text);
+    const images = (Array.isArray(body.images) ? body.images : [])
+      .map((item) => String(item?.file ?? item ?? ''))
+      .filter((file) => /^[a-z0-9]{6,64}\.[a-z0-9]{1,5}$/i.test(file) && fs.existsSync(path.join(MEDIA_DIR, file)))
+      .slice(0, 4);
+    if (!text && !images.length) return json(res, 400, { ok: false, error: 'empty' });
+    const imageSegments = images.map((file) => ({ type: 'image', data: { file, url: `/media/${encodeURIComponent(file)}` } }));
+    appendHistory('me', text, imageSegments);
     active += 1;
     try {
-      const result = await sendOneBot(text);
+      const result = await sendOneBot(text, images);
       return json(res, 200, { ok: true, message_id: result.message_id, mode: currentMode() });
     } catch (error) {
       return json(res, 500, { ok: false, error: String(error?.message ?? error) });

@@ -78,6 +78,38 @@ function sniffAudioExt(buffer) {
   return '.wav';
 }
 
+function sniffImageExt(buffer) {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return '.png';
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return '.jpg';
+  if (buffer.length >= 4 && buffer.subarray(0, 4).toString('ascii') === 'GIF8') return '.gif';
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return '.webp';
+  return '';
+}
+
+function storeImageSegment(part) {
+  const data = part?.data || {};
+  let file = String(data.file || data.path || '').trim();
+  const remoteUrl = String(data.url || '').trim();
+  let buffer = null;
+  if (file.startsWith('base64://')) {
+    try { buffer = Buffer.from(file.slice('base64://'.length), 'base64'); } catch { buffer = null; }
+  } else if (file.startsWith('file://')) {
+    try { buffer = fs.readFileSync(decodeURIComponent(file.slice('file://'.length))); } catch { buffer = null; }
+  } else if (file && path.isAbsolute(file)) {
+    try { buffer = fs.readFileSync(file); } catch { buffer = null; }
+  } else if (file && fs.existsSync(path.join(MEDIA_DIR, file))) {
+    return { type: 'image', data: { file, url: mediaUrl(file), localPath: path.join(MEDIA_DIR, file) } };
+  }
+  if (buffer) {
+    const ext = sniffImageExt(buffer);
+    if (!ext) return null;
+    const name = saveMedia(buffer, ext);
+    return { type: 'image', data: { file: name, url: mediaUrl(name), localPath: path.join(MEDIA_DIR, name) } };
+  }
+  if (remoteUrl) return { type: 'image', data: { file: '', url: remoteUrl } };
+  return null;
+}
+
 function saveMedia(buffer, ext) {
   const safeExt = /^\.[a-z0-9]{1,5}$/i.test(String(ext || '')) ? String(ext).toLowerCase() : '.wav';
   const name = `${crypto.createHash('sha1').update(buffer).digest('hex').slice(0, 16)}${safeExt}`;
@@ -127,6 +159,9 @@ function normalizeOutgoing(message) {
     } else if (type === 'record') {
       const stored = storeRecordSegment(part);
       if (stored) segments.push(stored);
+    } else if (type === 'image') {
+      const stored = storeImageSegment(part);
+      if (stored) segments.push(stored);
     } else {
       segments.push(part);
     }
@@ -171,8 +206,15 @@ const localEvents = [];
 let nextEventId = 1;
 const startedAt = Date.now();
 
-function eventPayload(text) {
+function eventPayload(text, images = []) {
   const id = nextMessageId++;
+  const message = [];
+  if (text) message.push(...textSegments(text));
+  for (const image of images.slice(0, 4)) {
+    const stored = storeImageSegment({ data: typeof image === 'string' ? { file: image } : image });
+    if (stored) message.push(stored);
+  }
+  const raw = text || (message.some((part) => part.type === 'image') ? '[图片]' : '');
   return {
     post_type: 'message',
     message_type: 'private',
@@ -181,10 +223,10 @@ function eventPayload(text) {
     user_id: adminId(),
     message_id: id,
     time: Math.floor(Date.now() / 1000),
-    raw_message: text,
+    raw_message: raw,
     font: 0,
     sender: { user_id: adminId(), nickname: 'Admin', card: '' },
-    message: textSegments(text),
+    message,
     ...(mode() === 'napcat' ? { message_sent_type: 'other' } : {}),
   };
 }
@@ -196,10 +238,10 @@ function broadcast(payload) {
   }
 }
 
-function onLocalSend(text) {
+function onLocalSend(text, images = []) {
   if (!clients.size) throw new Error('没有 OneBot 客户端连接');
   // QQ 语义：每条消息都是一个独立事件，发出即返回，不等待回复。
-  const event = eventPayload(text);
+  const event = eventPayload(text, images);
   broadcast(event);
   return { message_id: event.message_id };
 }
@@ -264,7 +306,7 @@ function action(name, params, echo) {
     return response(null, echo, 1404);
   }
   if (name === 'can_send_image') {
-    return response({ yes: false }, echo);
+    return response({ yes: true }, echo);
   }
   if (name === 'can_send_record') {
     return response({ yes: true }, echo);
@@ -444,9 +486,10 @@ const localServer = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/local/send') {
     const body = await readBody(req);
     const text = String(body.text || '').trim();
-    if (!text) return json(400, { ok: false, error: 'empty' });
+    const images = Array.isArray(body.images) ? body.images.slice(0, 4) : [];
+    if (!text && !images.length) return json(400, { ok: false, error: 'empty' });
     try {
-      const result = onLocalSend(text);
+      const result = onLocalSend(text, images);
       return json(200, { ok: true, message_id: result.message_id });
     } catch (error) { return json(503, { ok: false, error: String(error?.message ?? error) }); }
   }
@@ -456,7 +499,10 @@ const localServer = http.createServer(async (req, res) => {
     const file = path.join(MEDIA_DIR, name);
     if (!fs.existsSync(file)) return json(404, { ok: false, error: 'not found' });
     const buf = fs.readFileSync(file);
-    const types = { '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.flac': 'audio/flac' };
+    const types = {
+      '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.flac': 'audio/flac',
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+    };
     res.writeHead(200, { 'content-type': types[path.extname(name).toLowerCase()] || 'application/octet-stream', 'content-length': buf.length, 'cache-control': 'no-store' });
     return res.end(buf);
   }

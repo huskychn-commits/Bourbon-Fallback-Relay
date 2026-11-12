@@ -193,6 +193,37 @@ runtime/media/<sha1>.wav
 
 `can_send_record` 返回 `yes`。收到的语音暂不做识别（不做 ASR）。
 
+## 图片
+
+发送图片用标准 `image` 段：
+
+```json
+{
+  "action": "send_private_msg",
+  "params": {
+    "user_id": 123456789,
+    "message": [
+      { "type": "image", "data": { "file": "base64://<png/base64>" } }
+    ]
+  }
+}
+```
+
+`file` 同样接受 `file:///绝对路径`、本地绝对路径、`http(s)://` URL，或 `runtime/media`
+下已有文件名。服务端会校验 PNG / JPEG / GIF / WebP，保存到：
+
+```text
+runtime/media/<sha1>.<ext>
+```
+
+并回写：
+
+```json
+{ "type": "image", "data": { "file": "ab12cd34ef567890.png", "url": "http://127.0.0.1:3200/media/ab12cd34ef567890.png" } }
+```
+
+`can_send_image` 返回 `yes`。图片只做转发，不生成图片。
+
 ## 拍一拍
 
 私聊拍一拍，SnowLuma / NapCat 兼容：
@@ -250,7 +281,7 @@ POST http://127.0.0.1:3200/local/send
 只实现私聊
 群聊返回空/成功但不投递
 拍一拍仅私聊，群聊拍一拍返回 1404
-图片/文件暂不支持；语音支持发送和本地回放
+图片/语音支持发送和本地回放；文件暂不支持
 ```
 
 ## Auth
