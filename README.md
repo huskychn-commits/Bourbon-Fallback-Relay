@@ -1,85 +1,117 @@
 ﻿# Bourbon Fallback Relay
 
-一个 QQ 端口被封时的本地 OneBot 11 应急中继。
+Bourbon Fallback Relay（以下简称 BFR）是一个本地 OneBot 11 兼容层，用于在
+SnowLuma / NapCat 不可用时，为私聊 bot 提供可替换的本地接入端点。
 
-目标很简单：
+BFR 不实现聊天 AI、人格、记忆或桥接调度。它的职责仅限于：
 
-```text
-把原本接 SnowLuma / NapCat 的 bot
-改成接这个本地端口
-不需要改协议
-```
+- 提供标准 OneBot 11 HTTP / WebSocket 接口；
+- 将本地聊天窗的输入转换为 OneBot 事件；
+- 将 bot 的回复、语音与拍一拍投递回本地聊天窗；
+- 维护本地媒体文件与聊天记录。
 
-它不实现聊天 AI，也不依赖任何特定项目。  
-它只负责：
-
-```text
-OneBot 11 事件
-send_private_msg
-本地控制
-```
- 
-## 组成
-
-```text
-onebot/    OneBot 11 协议层
-chatbox/   本地聊天窗
-panel/     通用面板模板
-runtime/   本机状态（不发布）
-```
-
-Chatbox 需要外部 OneBot bot 连接后才会产生回复。
-
-## 功能
-
-- OneBot 11 HTTP / WebSocket
-- SnowLuma / NapCat 两种 profile
-- 私聊消息
-- 生成中可继续发送，消息按到达顺序排队
-- 私聊拍一拍（`friend_poke` / `send_poke`）
-- 管理员 QQ 映射
-- 共享 Chatbox
-- 可选通用 panel 模板
-- 无 Node 第三方依赖
-- panel 只使用 Python 标准库
-
-## 能力矩阵
+## 1. 能力矩阵
 
 | 能力 | 方向 | 状态 | 说明 |
 |---|---|---|---|
-| 文本 | 双向 | 支持 | 私聊 |
-| 拍一拍 | 双向 | 支持 | 仅私聊；群聊返回 1404 |
-| 语音 | 角色 → 用户 | 支持 | `record` 段落盘到 `runtime/media`，Chatbox 内回放 |
-| 语音 | 用户 → 角色 | 不支持 | 不做语音识别（ASR） |
-| 图片 | 双向 | 未支持 | OneBot 与 Chatbox 均未实现 |
-| 群聊 | — | 未实现 | 仅私聊 |
+| 文本 | 双向 | 支持 | 仅私聊 |
+| 拍一拍 | 双向 | 支持 | `friend_poke` / `send_poke`；群聊返回 `1404` |
+| 语音 | 角色 → 用户 | 支持 | 标准 `record` 段，落盘后可回放 |
+| 语音 | 用户 → 角色 | 不支持 | 不包含语音识别（ASR） |
+| 图片 | 双向 | 不支持 | OneBot 与 Chatbox 均未实现 |
+| 文件 | 双向 | 不支持 | — |
+| 群聊 | — | 不支持 | 仅实现私聊 |
 
-## 端口
+## 2. 系统组成
+
+| 目录 | 职责 |
+|---|---|
+| `onebot/` | OneBot 11 协议层：HTTP、WebSocket、本地控制、媒体服务 |
+| `chatbox/` | 本地聊天窗：消息输入、事件轮询、历史与语音回放 |
+| `panel/` | 可选的通用 panel 模板，仅使用 Python 标准库 |
+| `runtime/` | 本机状态：管理员 QQ、profile、媒体、聊天记录（不发布） |
+
+`chatbox/` 需要外部 OneBot bot 连接后才会产生回复。
+
+## 3. 架构与数据流
+
+### 3.1 入站
 
 ```text
-3000   OneBot HTTP
-3001   OneBot WebSocket
-3200   本地控制
-3199   Chatbox
-3134   通用 panel
+Chatbox
+  → POST http://127.0.0.1:3200/local/send
+  → BFR 生成 message 事件（message_id 唯一）
+  → 广播到 ws://127.0.0.1:3001/
+  → 外部 OneBot bot
 ```
 
-## 快速开始
+### 3.2 出站
 
-只需要 Node.js：
+```text
+外部 bot
+  → send_private_msg / friend_poke
+  → BFR 校验目标是否为管理员 QQ
+  → 写入本地事件队列
+  → Chatbox 轮询 /local/events
+  → 渲染文本、语音或拍一拍
+```
+
+BFR 采用单向事件模型：
+
+- 每条本地发送立即生成独立事件，不等待回复；
+- 每条消息分配唯一 `message_id`；
+- 不在协议层做请求 / 回复配对；
+- 消息批处理、会话合并与回复策略由上层 bot / bridge 负责。
+
+## 4. 端口
+
+| 端口 | 协议 | 用途 |
+|---|---|---|
+| `3000` | HTTP | OneBot 11 HTTP API |
+| `3001` | WebSocket | OneBot 11 事件与动作 |
+| `3200` | HTTP | 本地控制：`/local/*` 与 `/media/*` |
+| `3199` | HTTP | Chatbox |
+| `3134` | HTTP | 通用 panel（可选） |
+
+默认全部只监听 `127.0.0.1`。
+
+## 5. 快速开始
+
+### 5.1 依赖
+
+- Node.js（运行 `onebot/` 与 `chatbox/`）
+- Python 3.8+（可选，运行 `panel/`）
+
+### 5.2 启动 OneBot 兼容层
 
 ```powershell
 cd <repo>
 node onebot\server.mjs
 ```
 
-或者同时启动模板 panel：
+### 5.3 启动 Chatbox
+
+```powershell
+node chatbox\server.mjs
+```
+
+打开：
+
+```text
+http://127.0.0.1:3199
+```
+
+### 5.4 启动通用 panel（可选）
 
 ```powershell
 python panel\server.py
 ```
 
-Windows 也可以直接双击 `panel\start-panel.vbs`。
+Windows 也可以直接双击：
+
+```text
+panel\start-panel.vbs
+```
 
 打开：
 
@@ -87,23 +119,18 @@ Windows 也可以直接双击 `panel\start-panel.vbs`。
 http://127.0.0.1:3134
 ```
 
-## 外部 bot 接入
+## 6. OneBot 接入
 
-HTTP：
-
-```text
-http://127.0.0.1:3000
-```
-
-WebSocket：
+### 6.1 连接地址
 
 ```text
-ws://127.0.0.1:3001/
+HTTP  http://127.0.0.1:3000
+WS    ws://127.0.0.1:3001/
 ```
 
-把它当成 SnowLuma / NapCat 即可。
+将 BFR 视为 SnowLuma / NapCat 即可，协议仍为 OneBot 11。
 
-### 收到事件
+### 6.2 接收消息事件
 
 ```json
 {
@@ -126,7 +153,7 @@ ws://127.0.0.1:3001/
 }
 ```
 
-### 发送回复
+### 6.3 发送文本
 
 ```json
 {
@@ -150,9 +177,118 @@ ws://127.0.0.1:3001/
 }
 ```
 
-## 管理员 QQ
+### 6.4 发送语音
 
-在 panel 里填写，或直接写：
+BFR 接受标准 `record` 段：
+
+```json
+{
+  "action": "send_private_msg",
+  "params": {
+    "user_id": 123456789,
+    "message": [
+      { "type": "record", "data": { "file": "base64://<wav base64>" } }
+    ]
+  }
+}
+```
+
+`file` 支持以下形式：
+
+- `base64://...`
+- `file:///绝对路径`
+- 本地绝对路径
+- `http(s)://` URL
+- `runtime/media` 下已有文件名
+
+音频会保存至 `runtime/media/`，并通过 `/media/<file>` 提供回放。
+`can_send_record` 返回 `yes`。
+
+### 6.5 拍一拍
+
+发送：
+
+```json
+{
+  "action": "friend_poke",
+  "params": { "user_id": 123456789 }
+}
+```
+
+`send_poke` 为同一动作的别名；返回 `data: null`。
+群聊拍一拍未实现，带 `group_id` 时返回 `retcode: 1404`。
+
+接收：
+
+```json
+{
+  "post_type": "notice",
+  "notice_type": "notify",
+  "sub_type": "poke",
+  "self_id": 10000,
+  "time": 1790000000,
+  "user_id": 123456789,
+  "sender_id": 123456789,
+  "target_id": 10000,
+  "action": "拍一拍",
+  "suffix": "",
+  "action_img_url": ""
+}
+```
+
+`user_id` 为私聊对象，`sender_id` 为发起者，`target_id` 为被拍者。
+
+## 7. 本地控制 API
+
+Chatbox 与本地界面使用以下接口，不建议外部 bot 直接调用。
+
+### 7.1 发送消息
+
+```text
+POST http://127.0.0.1:3200/local/send
+{"text":"在吗"}
+```
+
+响应：
+
+```json
+{"ok":true,"message_id":1000}
+```
+
+该接口立即返回，不等待 bot 回复。
+
+### 7.2 拍一拍
+
+```text
+POST http://127.0.0.1:3200/local/poke
+```
+
+响应：
+
+```json
+{"ok":true}
+```
+
+### 7.3 本地事件
+
+```text
+GET http://127.0.0.1:3200/local/events?since=0
+```
+
+返回 `message_sent`、`notice` 等异步事件及 `lastId`。
+
+### 7.4 媒体
+
+```text
+GET http://127.0.0.1:3200/media/<file>
+GET http://127.0.0.1:3199/media/<file>
+```
+
+## 8. 配置
+
+### 8.1 管理员 QQ
+
+通过 panel 填写，或直接编辑：
 
 ```text
 runtime/admin.json
@@ -162,15 +298,10 @@ runtime/admin.json
 {"adminQQ":"123456789"}
 ```
 
-外部 bot 发送时，`user_id` 填这个号，回复会投递到本地控制端。
+bot 发送时 `user_id` 必须为该号码，否则返回 `1404`。
+未配置时使用内部占位号 `10001`。
 
-不填时使用占位号：
-
-```text
-10001
-```
-
-## Profile
+### 8.2 Profile
 
 ```text
 runtime/mode.json
@@ -186,45 +317,9 @@ runtime/mode.json
 {"mode":"napcat"}
 ```
 
-核心都是 OneBot 11；差异只在额外接口和默认值。
+两者均基于 OneBot 11，差异仅在额外接口与默认值。
 
-## 本地控制
-
-聊天窗 / 本地 UI：
-
-```text
-POST http://127.0.0.1:3200/local/send
-{"text":"在吗"}
-```
-
-```json
-{"ok":true,"reply":"……在。"}
-```
-
-## 目录
-
-```text
-onebot/
-  server.mjs      OneBot 11 服务
-panel/
-  server.py       可选通用 panel
-  index.html
-  README.md
-runtime/          本地状态（gitignore）
-```
-
-## 安全
-
-默认只监听：
-
-```text
-127.0.0.1
-```
-
-没有鉴权也可以本地使用。  
-如果要暴露到局域网，请在前面加反向代理和 token。
-
-可选 token：
+### 8.3 Access Token（可选）
 
 ```powershell
 $env:ONEBOT_ACCESS_TOKEN = "your-token"
@@ -236,33 +331,16 @@ $env:ONEBOT_ACCESS_TOKEN = "your-token"
 Authorization: Bearer your-token
 ```
 
-## 限制
+## 9. 存储
 
-```text
-只实现私聊
-群聊返回空实现
-拍一拍仅私聊，群聊拍一拍返回 1404
-图片 / 文件暂不支持；语音支持发送和本地回放
-```
-
-## 文档
-
-- [ONEBOT.md](ONEBOT.md)
-- [PORT.md](PORT.md)
-- [HOW-TO-ADAPT.md](HOW-TO-ADAPT.md)
-- [panel/README.md](panel/README.md)
-
-## 存储
-
-`runtime/` 是本机状态，不发布：
+`runtime/` 为本机状态，不进入版本库：
 
 ```text
 runtime/
 ├─ admin.json                     管理员 QQ
 ├─ mode.json                      snowluma / napcat
-├─ logs/agent.log                 运行日志
 ├─ media/                         语音文件（按 sha1 命名）
-└─ chat-history/YYYY-MM-DD.jsonl  完整聊天记录
+└─ chat-history/YYYY-MM-DD.jsonl  聊天记录
 ```
 
 聊天记录格式：
@@ -271,21 +349,30 @@ runtime/
 {"role":"me","text":"...","time":"17:20","at":1794388800000}
 ```
 
-`role` 为 `me` 或 `bot`。
+`role` 为 `me`、`bot` 或 `sys`；语音消息额外包含 `segments`。
 
-## 扩展
+## 10. 安全
 
-本项目只提供 OneBot 11 协议层。
+默认只监听 `127.0.0.1`，适用于本机使用。
 
-角色、记忆、聊天 AI、完整 panel 由使用者自己的项目实现。
+如需暴露到局域网，应在前面增加反向代理与访问控制，并配置
+`ONEBOT_ACCESS_TOKEN`。BFR 本身不提供 TLS、账号体系或多租户隔离。
 
-`panel/` 是一个可选的通用模板，可以直接改。本地专用的扩展适配不属于本仓库。
+## 11. 限制与非目标
 
-## License
+- 仅实现私聊；群聊动作返回空实现或 `1404`。
+- 不支持图片、文件与视频。
+- 不支持用户语音转文字（无 ASR）。
+- 不实现聊天 AI、人格、记忆、主动对话或 bridge 调度。
+- 不保证与 SnowLuma / NapCat 的全部扩展接口兼容。
+
+## 12. 文档
+
+- [ONEBOT.md](ONEBOT.md)
+- [PORT.md](PORT.md)
+- [HOW-TO-ADAPT.md](HOW-TO-ADAPT.md)
+- [panel/README.md](panel/README.md)
+
+## 13. License
 
 MIT。见 [LICENSE](LICENSE)。
-
-
-
-
-
